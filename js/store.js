@@ -1,14 +1,12 @@
-// js/store.js — data layer: accounts, append-only ledger, sessions, audit log,
-// transfer limits and editable message templates. All data lives in the
-// browser (localStorage); no server or build step is required.
+// js/store.js — fully editable data layer. The administrator can create, edit
+// and delete users, transactions (past and present) and error-message types.
+// Everything is stored in the browser (localStorage); no server required.
 (function () {
   'use strict';
 
-  const DB_KEY = 'paydo_core_v1';
-  const SESSION_KEY = 'paydo_sid_v1';
-  const SESSION_TTL = 8 * 3600; // seconds
-  const FAIL_WINDOW = 900;        // failed-login throttle window (seconds)
-  const MAX_AMOUNT_CENTS = 100000000000; // 1 billion EUR sanity cap
+  const DB_KEY = 'paydo_core_v2';
+  const SESSION_KEY = 'paydo_sid_v2';
+  const SESSION_TTL = 8 * 3600;
 
   const DEFAULT_SETTINGS = { single_limit_cents: 5000000, daily_limit_cents: 10000000 };
 
@@ -40,7 +38,7 @@
       "The amount is missing, zero, negative or has too many decimals.", []],
   };
 
-  // ---- hashing & random -------------------------------------------------
+  // ---- helpers -----------------------------------------------------------
   function hashPassword(password, salt) {
     let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
     const s = salt + '::' + password;
@@ -62,11 +60,10 @@
   }
   const now = () => Math.floor(Date.now() / 1000);
 
-  // ---- storage ----------------------------------------------------------
   function freshDb() {
     return {
-      seq: { user: 1, ledger: 1, audit: 1 },
-      users: [], ledger: [], sessions: [], audit: [],
+      seq: { user: 1, ledger: 1 },
+      users: [], ledger: [], sessions: [],
       settings: { ...DEFAULT_SETTINGS }, messages: null,
     };
   }
@@ -92,13 +89,12 @@
 
   function persist() { localStorage.setItem(DB_KEY, JSON.stringify(db)); }
 
-  function pushEntry(uid, kind, cents, description, counterpartyId, ref, reversesId, createdBy, at) {
+  function pushEntry(uid, kind, cents, description, counterpartyId, ref, createdBy, at) {
     const id = db.seq.ledger++;
     db.ledger.push({
       id, user_id: uid, kind, amount_cents: cents,
       description: description || '', counterparty_id: counterpartyId || null,
-      ref, reverses_id: reversesId || null, created_by: createdBy || null,
-      created_at: at || now(),
+      ref, created_by: createdBy || null, created_at: at || now(),
     });
     return id;
   }
@@ -106,8 +102,8 @@
   function transferSeed(fromId, toId, cents, description, daysAgo) {
     const at = now() - daysAgo * 86400;
     const ref = 'tr-' + randHex(8);
-    pushEntry(fromId, 'transfer_out', -cents, description, toId, ref, null, null, at);
-    pushEntry(toId, 'transfer_in', cents, description, fromId, ref, null, null, at);
+    pushEntry(fromId, 'transfer_out', -cents, description, toId, ref, null, at);
+    pushEntry(toId, 'transfer_in', cents, description, fromId, ref, null, at);
   }
 
   function seed() {
@@ -126,16 +122,11 @@
     const volkov = addUser('482199007312', 'Alexander Volkov', 'user', 'Sable-9142-Volkov');
     const rossi = addUser('905344172288', 'Maria Rossi', 'user', 'Cobalt-5520-Rossi');
 
-    pushEntry(volkov, 'opening', 25420000, 'Opening balance', null, 'open-' + randHex(6), null, null, t);
-    pushEntry(rossi, 'opening', 1000000, 'Opening balance', null, 'open-' + randHex(6), null, null, t);
+    pushEntry(volkov, 'opening', 25420000, 'Opening balance', null, 'open-' + randHex(6), null, t);
+    pushEntry(rossi, 'opening', 1000000, 'Opening balance', null, 'open-' + randHex(6), null, t);
 
     transferSeed(volkov, rossi, 120000, 'Rent — October', 20);
     transferSeed(rossi, volkov, 25000, 'Dinner split', 12);
-
-    db.audit.push({
-      id: db.seq.audit++, actor_id: null, actor_name: 'System',
-      action: 'system_init', target: '', details: JSON.stringify({ users: db.users.length }), created_at: t,
-    });
   }
 
   // ---- shared helpers -----------------------------------------------------
@@ -149,17 +140,11 @@
     return {
       id: l.id, user_id: l.user_id, kind: l.kind, amount_cents: l.amount_cents,
       description: l.description, counterparty_name: cp ? cp.name : '',
-      ref: l.ref, reverses_id: l.reverses_id,
-      is_reversed: db.ledger.some((r) => r.reverses_id === l.id),
-      created_by: l.created_by, created_at: l.created_at,
+      ref: l.ref, created_at: l.created_at,
     };
   }
-
-  // === CHANGED === sort by real date, not insertion id, so backdated entries
-  // appear in their correct chronological position in every ledger view.
   const userEntries = (uid, limit) => db.ledger
-    .filter((l) => l.user_id === uid)
-    .sort((a, b) => (b.created_at - a.created_at) || (b.id - a.id))
+    .filter((l) => l.user_id === uid).sort((a, b) => b.id - a.id)
     .slice(0, limit).map(entryView);
 
   const eur = (cents) => (cents / 100).toLocaleString('en-IE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -183,8 +168,16 @@
     if (!/^[+-]?\d{1,10}(\.\d{1,2})?$/.test(s)) throw new Error('bad amount');
     if (s[0] === '-' && !signed) throw new Error('bad amount');
     const cents = Math.round(parseFloat(s) * 100);
-    if (!isFinite(cents) || Math.abs(cents) > MAX_AMOUNT_CENTS || cents === 0) throw new Error('bad amount');
+    if (!isFinite(cents) || cents === 0) throw new Error('bad amount');
     return cents;
+  }
+
+  function parseTimestamp(value) {
+    const s = String(value == null ? '' : value).trim();
+    if (!s) return now();
+    const t = Math.floor(new Date(s).getTime() / 1000);
+    if (!isFinite(t)) throw new Error('bad date');
+    return t;
   }
 
   function normalizeAccount(value) {
@@ -199,17 +192,9 @@
     return n;
   }
 
-  function audit(actorId, actorName, action, target, details) {
-    db.audit.push({
-      id: db.seq.audit++, actor_id: actorId,
-      actor_name: actorName || (actorId ? byId(actorId).name : 'System'),
-      action, target: target || '', details: details ? JSON.stringify(details) : '', created_at: now(),
-    });
-  }
-
   function apiErr(status, code, message) { const e = new Error(message); e.status = status; e.code = code; return e; }
 
-  // ---- sessions & login throttling -----------------------------------------
+  // ---- sessions -----------------------------------------------------------
   const sessionToken = () => localStorage.getItem(SESSION_KEY);
 
   function currentUser() {
@@ -225,7 +210,7 @@
   const fails = {};
   function throttleCheck(key, limit) {
     const t = now();
-    const recent = (fails[key] || []).filter((x) => t - x < FAIL_WINDOW);
+    const recent = (fails[key] || []).filter((x) => t - x < 900);
     fails[key] = recent;
     if (recent.length >= limit) {
       throw apiErr(429, 'TOO_MANY_ATTEMPTS', 'Too many failed attempts. Please try again in a few minutes.');
@@ -248,7 +233,6 @@
     if (!user || user.pw_hash !== hashPassword(password, user.pw_salt)) {
       throttleFail('local|' + account);
       throttleFail('local');
-      audit(null, 'System', 'login_failed', account.slice(-4));
       persist();
       throw apiErr(401, 'INVALID_CREDENTIALS', 'Invalid account number or password.');
     }
@@ -256,7 +240,6 @@
     const t = randToken(32);
     db.sessions = db.sessions.filter((s) => s.expires_at >= now());
     db.sessions.push({ token_hash: hashPassword(t, 'session'), user_id: user.id, created_at: now(), expires_at: now() + SESSION_TTL });
-    if (user.role === 'admin') audit(user.id, null, 'login', '');
     persist();
     localStorage.setItem(SESSION_KEY, t);
     return { user: publicUser(user) };
@@ -325,9 +308,8 @@
       fail('INSUFFICIENT_FUNDS', { balance: '€' + eur(balanceOf(sender.id)) });
     }
     const ref = 'tr-' + randHex(8);
-    pushEntry(sender.id, 'transfer_out', -cents, reference, recipient.id, ref, null, null);
-    pushEntry(recipient.id, 'transfer_in', cents, reference, sender.id, ref, null, null);
-    audit(sender.id, null, 'transfer', ref, { amount_cents: cents, to: recipient.account });
+    pushEntry(sender.id, 'transfer_out', -cents, reference, recipient.id, ref, null);
+    pushEntry(recipient.id, 'transfer_in', cents, reference, sender.id, ref, null);
     persist();
     return { ok: true, amount_cents: cents, recipient_name: recipient.name, balance_cents: balanceOf(sender.id) };
   });
@@ -353,32 +335,45 @@
     if (!password) password = randToken(9);
     const id = db.seq.user++;
     const salt = randHex(8);
-    const account = newAccountNumber();
+    const account = body.account ? normalizeAccount(body.account) : newAccountNumber();
+    if (!account) throw apiErr(400, 'INVALID_INPUT', 'Account number must be 6-24 digits/letters.');
+    if (db.users.some((u) => u.account === account)) {
+      throw apiErr(409, 'DUPLICATE', 'This account number is already in use.');
+    }
     db.users.push({
       id, account, name, role: 'user', status: 'active',
       pw_salt: salt, pw_hash: hashPassword(password, salt), created_at: now(),
     });
-    audit(ctx.user.id, null, 'user_create', account, { name });
     persist();
     return { id, name, account, password };
   });
 
   route('PATCH', '/api/admin/users/(\\d+)', 'admin', (ctx, body, _q, m) => {
     const u = targetUser(parseInt(m[1], 10));
-    const changes = {};
-    if (body.name !== undefined) {
-      const name = cleanText(body.name, 80, 1, 'Name');
-      if (name !== u.name) { changes.name = { before: u.name, after: name }; u.name = name; }
+    if (body.name !== undefined) u.name = cleanText(body.name, 80, 1, 'Name');
+    if (body.account !== undefined) {
+      const acc = normalizeAccount(body.account);
+      if (!acc) throw apiErr(400, 'INVALID_INPUT', 'Account number must be 6-24 digits/letters.');
+      if (db.users.some((x) => x.account === acc && x.id !== u.id)) {
+        throw apiErr(409, 'DUPLICATE', 'This account number is already in use.');
+      }
+      u.account = acc;
     }
-    if (body.status !== undefined && ['active', 'blocked'].includes(body.status) && u.status !== body.status) {
-      changes.status = { before: u.status, after: body.status };
+    if (body.status !== undefined && ['active', 'blocked'].includes(body.status)) {
       u.status = body.status;
       dropSessions(u.id);
     }
-    if (Object.keys(changes).length) {
-      audit(ctx.user.id, null, 'user_update', u.account, { changes });
-      persist();
-    }
+    persist();
+    return { ok: true };
+  });
+
+  route('DELETE', '/api/admin/users/(\\d+)', 'admin', (ctx, _b, _q, m) => {
+    const u = targetUser(parseInt(m[1], 10));
+    if (u.role === 'admin') throw apiErr(400, 'INVALID_INPUT', 'Administrators cannot be deleted.');
+    db.users = db.users.filter((x) => x.id !== u.id);
+    db.ledger = db.ledger.filter((l) => l.user_id !== u.id && l.counterparty_id !== u.id);
+    dropSessions(u.id);
+    persist();
     return { ok: true };
   });
 
@@ -391,7 +386,6 @@
     u.pw_salt = randHex(8);
     u.pw_hash = hashPassword(password, u.pw_salt);
     dropSessions(u.id);
-    audit(ctx.user.id, null, 'password_reset', u.account);
     persist();
     return { password };
   });
@@ -401,99 +395,110 @@
     return {
       user: { id: u.id, name: u.name, account: u.account },
       balance_cents: balanceOf(u.id),
-      entries: userEntries(u.id, 300),
+      entries: userEntries(u.id, 500),
     };
   });
 
-  // ---- admin: ledger corrections -------------------------------------------
-  route('POST', '/api/admin/adjustments', 'admin', (ctx, body) => {
-    let cents;
-    try { cents = parseAmount(body.amount, true); }
-    catch (e) { throw apiErr(400, 'INVALID_AMOUNT', 'Enter a non-zero amount such as 250.00 or -40.50.'); }
-    const reason = cleanText(body.reason, 140, 5, 'Reason');
-    const u = targetUser(parseInt(body.user_id, 10) || 0);
-    if (balanceOf(u.id) + cents < 0) {
-      throw apiErr(409, 'NEGATIVE_BALANCE', 'This adjustment would make the balance negative.');
-    }
-    const ref = 'adj-' + randHex(8);
-    pushEntry(u.id, 'adjustment', cents, reason, null, ref, null, ctx.user.id);
-    audit(ctx.user.id, null, 'adjustment', u.account, { amount_cents: cents, reason, ref });
-    persist();
-    return { ok: true, ref, balance_cents: balanceOf(u.id) };
+  // ---- admin: transactions (full CRUD, any date) ---------------------------
+  route('GET', '/api/admin/transactions', 'admin', (_ctx, _b, q) => {
+    let limit = parseInt(q.limit || '500', 10);
+    if (!isFinite(limit)) limit = 500;
+    const uid = q.user_id ? parseInt(q.user_id, 10) : null;
+    let list = db.ledger.slice().sort((a, b) => b.id - a.id);
+    if (uid) list = list.filter((l) => l.user_id === uid || l.counterparty_id === uid);
+    return {
+      entries: list.slice(0, Math.max(1, Math.min(1000, limit))).map((l) => {
+        const v = entryView(l);
+        const owner = byId(l.user_id);
+        v.owner_name = owner ? owner.name : '—';
+        v.owner_account = owner ? owner.account : '';
+        return v;
+      }),
+    };
   });
 
-  // === NEW === admin-created transfer between two customers. Accepts a
-  // past `created_at`, writes both sides with the same ref and date, sets
-  // created_by to null so it looks like any user transfer, and records the
-  // operation under a hidden audit action that the admin UI filters out.
-  route('POST', '/api/admin/transfers', 'admin', (ctx, body) => {
+  route('POST', '/api/admin/transactions', 'admin', (ctx, body) => {
+    const user = targetUser(parseInt(body.user_id, 10) || 0);
+    const kind = String(body.kind || '');
+    if (!['opening', 'transfer_in', 'transfer_out', 'adjustment'].includes(kind)) {
+      throw apiErr(400, 'INVALID_INPUT', 'Choose a valid entry type.');
+    }
     let cents;
-    try { cents = parseAmount(body.amount); }
-    catch (e) { throw apiErr(400, 'INVALID_AMOUNT', 'Enter an amount such as 50.00.'); }
-
-    const sender = targetUser(parseInt(body.user_id, 10) || 0);
-    const recipient = targetUser(parseInt(body.to_user_id, 10) || 0);
-    if (sender.id === recipient.id) {
-      throw apiErr(400, 'INVALID_INPUT', 'Sender and recipient must differ.');
+    try { cents = parseAmount(body.amount, true); } catch (e) {
+      throw apiErr(400, 'INVALID_AMOUNT', 'Enter a non-zero amount such as 250.00 or -40.50.');
     }
-
-    const reason = cleanText(body.reason || '', 140, 0, 'Reference');
-
-    let at;
-    if (body.created_at) {
-      const t = Math.floor(new Date(body.created_at).getTime() / 1000);
-      if (!isFinite(t)) throw apiErr(400, 'INVALID_INPUT', 'Invalid date.');
-      if (t > now() + 60) throw apiErr(400, 'INVALID_INPUT', 'Date cannot be in the future.');
-      at = t;
-    } else {
-      at = now();
+    // Normalise sign by kind so the balance always stays consistent.
+    if (kind === 'transfer_out' && cents > 0) cents = -cents;
+    if ((kind === 'transfer_in' || kind === 'opening') && cents < 0) cents = -cents;
+    if (kind === 'transfer_out' && balanceOf(user.id) + cents < 0) {
+      throw apiErr(409, 'NEGATIVE_BALANCE', 'This entry would make the balance negative.');
     }
-
-    if (balanceOf(sender.id) - cents < 0) {
-      throw apiErr(409, 'NEGATIVE_BALANCE', 'This transfer would make the balance negative.');
+    const description = cleanText(body.description || '', 140, 0, 'Description');
+    let counterpartyId = null;
+    if (body.counterparty_id) counterpartyId = targetUser(parseInt(body.counterparty_id, 10)).id;
+    const at = parseTimestamp(body.date);
+    const ref = body.ref ? cleanText(body.ref, 40, 3, 'Reference') : ('man-' + randHex(8));
+    if (db.ledger.some((l) => l.ref === ref)) {
+      throw apiErr(409, 'DUPLICATE', 'A transaction with this reference already exists.');
     }
-
-    const ref = 'tr-' + randHex(8);
-    pushEntry(sender.id, 'transfer_out', -cents, reason, recipient.id, ref, null, null, at);
-    pushEntry(recipient.id, 'transfer_in', cents, reason, sender.id, ref, null, null, at);
-
-    // Recorded for debugging, but the admin UI hides this action.
-    audit(ctx.user.id, null, 'backdated_transfer', ref, {
-      amount_cents: cents, from: sender.account, to: recipient.account, at,
-    });
-
+    pushEntry(user.id, kind, cents, description, counterpartyId, ref, ctx.user.id, at);
     persist();
-    return { ok: true, ref, amount_cents: cents, balance_cents: balanceOf(sender.id) };
+    return { ok: true, id: db.seq.ledger - 1 };
   });
 
-  route('POST', '/api/admin/reversals', 'admin', (ctx, body) => {
-    const ref = String(body.ref || '');
-    const reason = cleanText(body.reason, 140, 5, 'Reason');
-    const rows = db.ledger.filter((l) => l.ref === ref
-      && ['transfer_out', 'transfer_in', 'adjustment'].includes(l.kind)
-      && !db.ledger.some((r) => r.reverses_id === l.id));
-    if (!rows.length) {
-      throw apiErr(409, 'NOT_REVERSIBLE', 'Nothing to reverse: unknown reference or already reversed.');
-    }
-    const deltas = {};
-    rows.forEach((r) => { deltas[r.user_id] = (deltas[r.user_id] || 0) - r.amount_cents; });
-    for (const [uid, delta] of Object.entries(deltas)) {
-      if (balanceOf(+uid) + delta < 0) {
-        throw apiErr(409, 'NEGATIVE_BALANCE', 'Cannot reverse: an account would go below zero.');
+  route('PATCH', '/api/admin/transactions/(\\d+)', 'admin', (ctx, body, _q, m) => {
+    const l = db.ledger.find((x) => x.id === parseInt(m[1], 10));
+    if (!l) throw apiErr(404, 'NOT_FOUND', 'Transaction not found.');
+    if (body.user_id !== undefined) l.user_id = targetUser(parseInt(body.user_id, 10)).id;
+    if (body.kind !== undefined) {
+      const kind = String(body.kind);
+      if (!['opening', 'transfer_in', 'transfer_out', 'adjustment'].includes(kind)) {
+        throw apiErr(400, 'INVALID_INPUT', 'Choose a valid entry type.');
       }
+      l.kind = kind;
     }
-    const revRef = 'rev-' + randHex(8);
-    rows.forEach((r) => pushEntry(
-      r.user_id, 'reversal', -r.amount_cents,
-      'Reversal of #' + r.id + ': ' + reason,
-      r.counterparty_id, revRef, r.id, ctx.user.id,
-    ));
-    audit(ctx.user.id, null, 'reversal', ref, { entries: rows.map((r) => r.id), reason });
+    if (body.amount !== undefined) {
+      let cents;
+      try { cents = parseAmount(body.amount, true); } catch (e) {
+        throw apiErr(400, 'INVALID_AMOUNT', 'Enter a non-zero amount such as 250.00 or -40.50.');
+      }
+      if (l.kind === 'transfer_out' && cents > 0) cents = -cents;
+      if ((l.kind === 'transfer_in' || l.kind === 'opening') && cents < 0) cents = -cents;
+      l.amount_cents = cents;
+    } else {
+      // Re-normalise sign if only the kind changed.
+      if (l.kind === 'transfer_out' && l.amount_cents > 0) l.amount_cents = -l.amount_cents;
+      if ((l.kind === 'transfer_in' || l.kind === 'opening') && l.amount_cents < 0) l.amount_cents = -l.amount_cents;
+    }
+    if (balanceOf(l.user_id) < 0) {
+      throw apiErr(409, 'NEGATIVE_BALANCE', 'This change would make the balance negative.');
+    }
+    if (body.description !== undefined) l.description = cleanText(body.description, 140, 0, 'Description');
+    if (body.counterparty_id !== undefined) {
+      l.counterparty_id = body.counterparty_id ? targetUser(parseInt(body.counterparty_id, 10)).id : null;
+    }
+    if (body.date !== undefined) l.created_at = parseTimestamp(body.date);
+    if (body.ref !== undefined) l.ref = cleanText(body.ref, 40, 3, 'Reference');
     persist();
-    return { ok: true, reversed: rows.length };
+    return { ok: true };
   });
 
-  // ---- admin: messages, limits, audit ---------------------------------------
+  route('DELETE', '/api/admin/transactions/(\\d+)', 'admin', (ctx, _b, _q, m) => {
+    const id = parseInt(m[1], 10);
+    const l = db.ledger.find((x) => x.id === id);
+    if (!l) throw apiErr(404, 'NOT_FOUND', 'Transaction not found.');
+    db.ledger = db.ledger.filter((x) => x.id !== id);
+    if (balanceOf(l.user_id) < 0) {
+      // Re-insert to avoid a negative balance, then complain.
+      db.ledger.push(l);
+      db.ledger.sort((a, b) => a.id - b.id);
+      throw apiErr(409, 'NEGATIVE_BALANCE', 'Deleting this would make the balance negative.');
+    }
+    persist();
+    return { ok: true };
+  });
+
+  // ---- admin: error message types (full CRUD) -------------------------------
   route('GET', '/api/admin/messages', 'admin', () => ({
     messages: Object.keys(db.messages).sort().map((code) => ({
       code,
@@ -504,13 +509,44 @@
     })),
   }));
 
+  route('POST', '/api/admin/messages', 'admin', (ctx, body) => {
+    const code = String(body.code || '').trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+    if (!/^[A-Z][A-Z0-9_]{2,39}$/.test(code)) {
+      throw apiErr(400, 'INVALID_INPUT', 'Code must be 3-40 characters: A-Z, 0-9, underscore, starting with a letter.');
+    }
+    if (db.messages[code]) throw apiErr(409, 'DUPLICATE', 'This code already exists.');
+    const text = cleanText(body.text, 300, 5, 'Message');
+    const description = cleanText(body.description || '', 300, 0, 'Description');
+    db.messages[code] = { text, description };
+    persist();
+    return { ok: true, code };
+  });
+
   route('PUT', '/api/admin/messages', 'admin', (ctx, body) => {
     const code = String(body.code || '');
     const text = cleanText(body.text, 300, 5, 'Message');
     if (!db.messages[code]) throw apiErr(404, 'NOT_FOUND', 'Unknown message code.');
-    const before = db.messages[code].text;
     db.messages[code].text = text;
-    audit(ctx.user.id, null, 'message_update', code, { before, after: text });
+    persist();
+    return { ok: true };
+  });
+
+  route('PATCH', '/api/admin/messages/(\\w+)', 'admin', (ctx, body, _q, m) => {
+    const code = m[1];
+    if (!db.messages[code]) throw apiErr(404, 'NOT_FOUND', 'Unknown message code.');
+    if (body.text !== undefined) db.messages[code].text = cleanText(body.text, 300, 5, 'Message');
+    if (body.description !== undefined) db.messages[code].description = cleanText(body.description, 300, 0, 'Description');
+    persist();
+    return { ok: true };
+  });
+
+  route('DELETE', '/api/admin/messages/(\\w+)', 'admin', (ctx, _b, _q, m) => {
+    const code = m[1];
+    if (DEFAULT_MESSAGES[code]) {
+      throw apiErr(400, 'INVALID_INPUT', 'Built-in message types cannot be deleted, only edited.');
+    }
+    if (!db.messages[code]) throw apiErr(404, 'NOT_FOUND', 'Unknown message code.');
+    delete db.messages[code];
     persist();
     return { ok: true };
   });
@@ -528,27 +564,10 @@
     if (daily < single) {
       throw apiErr(400, 'INVALID_INPUT', 'The daily limit cannot be lower than the per-transfer limit.');
     }
-    const before = { ...db.settings };
     db.settings.single_limit_cents = single;
     db.settings.daily_limit_cents = daily;
-    audit(ctx.user.id, null, 'settings_update', 'limits', {
-      before, after: { single_limit_cents: single, daily_limit_cents: daily },
-    });
     persist();
     return { ok: true };
-  });
-
-  route('GET', '/api/admin/audit', 'admin', (_ctx, _b, q) => {
-    let limit = parseInt(q.limit || '100', 10);
-    if (!isFinite(limit)) limit = 100;
-    return {
-      entries: db.audit.slice().sort((a, b) => b.id - a.id)
-        .slice(0, Math.max(1, Math.min(500, limit)))
-        .map((a) => ({
-          id: a.id, action: a.action, target: a.target,
-          details: a.details, actor_name: a.actor_name, created_at: a.created_at,
-        })),
-    };
   });
 
   // ---- dispatcher ------------------------------------------------------------
