@@ -12,10 +12,9 @@
     <div class="brand">
       <div class="brand-mark" data-brand-mark>B</div>
       <span class="brand-name" data-brand>Bank</span>
-      <span class="badge neutral">Admin</span>
     </div>
-    <div class="topbar-right">
-      <span class="user-name" id="adminName"></span>
+    <div class="topbar-actions">
+      <span id="adminName" class="user-name"></span>
       <button class="btn btn-secondary btn-sm" id="logoutBtn" type="button">Sign out</button>
     </div>
   </header>
@@ -28,81 +27,36 @@
       <button class="tab" role="tab" data-tab="limits" aria-selected="false" type="button">Limits</button>
     </div>
 
-    <!-- Customers -->
     <section data-panel="customers" class="grid-gap">
       <div class="card">
-        <div class="section-header"><h2>New customer</h2></div>
-        <form id="createForm" class="form" novalidate>
-          <div class="row">
-            <div class="field">
-              <label for="newName">Full name</label>
-              <input type="text" id="newName" maxlength="80" required />
-            </div>
-            <div class="field">
-              <label for="newAccount">Account number <span class="muted">(optional)</span></label>
-              <input type="text" id="newAccount" inputmode="numeric" autocomplete="off" placeholder="Leave empty to generate" />
-            </div>
-          </div>
-          <div class="row">
-            <div class="field">
-              <label for="newPassword">Password <span class="muted">(optional)</span></label>
-              <input type="text" id="newPassword" autocomplete="off" placeholder="Leave empty to generate" />
-            </div>
-          </div>
-          <div id="createError" class="alert error" role="alert" hidden></div>
-          <div><button class="btn" type="submit">Create customer</button></div>
-        </form>
-        <div id="createdBox" hidden></div>
-      </div>
-
-      <div class="card">
-        <div class="section-header"><h2>Customers</h2></div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr><th>Account</th><th>Name</th><th>Status</th><th class="num">Balance</th><th>Actions</th></tr>
-            </thead>
-            <tbody id="usersBody"></tbody>
-          </table>
+        <div class="section-header">
+          <h2>Customers</h2>
+          <button class="btn btn-sm" id="addCustomerBtn" type="button">+ Add customer</button>
         </div>
+        <div id="customersList"></div>
       </div>
     </section>
 
-    <!-- Transactions -->
     <section data-panel="transactions" hidden class="grid-gap">
       <div class="card">
         <div class="section-header">
           <h2>All transactions</h2>
-          <div class="row-actions">
-            <select id="txFilter" aria-label="Filter by customer" style="max-width:260px"></select>
-            <button class="btn btn-secondary btn-sm" id="txRefresh" type="button">Refresh</button>
-            <button class="btn btn-sm" id="txNew" type="button">New transaction</button>
-          </div>
+          <button class="btn btn-sm" id="addTransactionBtn" type="button">+ Add transaction</button>
         </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr><th>Date</th><th>Customer</th><th>Type</th><th>Counterparty</th><th class="num">Amount</th><th>Reference</th><th>Actions</th></tr>
-            </thead>
-            <tbody id="txBody"></tbody>
-          </table>
-        </div>
+        <div id="transactionsList"></div>
       </div>
     </section>
 
-    <!-- Error messages -->
     <section data-panel="messages" hidden>
       <div class="card">
         <div class="section-header">
           <h2>Error message types</h2>
-          <button class="btn btn-sm" id="msgNew" type="button">New message type</button>
+          <button class="btn btn-sm" id="addMessageBtn" type="button">+ Add message type</button>
         </div>
-        <p class="page-sub">Each message is shown to the customer when the matching check fails. Placeholders are filled in automatically. Built-in types can be edited but not deleted.</p>
         <div id="messagesList"></div>
       </div>
     </section>
 
-    <!-- Limits -->
     <section data-panel="limits" hidden>
       <div class="card">
         <div class="section-header"><h2>Transfer limits</h2></div>
@@ -124,9 +78,37 @@
     </section>
   </main>
 
-  <dialog id="dlg">
-    <div class="dlg-body" id="dlgBody"></div>
-    <div class="dlg-foot" id="dlgFoot"></div>
+  <dialog id="customerDialog" aria-labelledby="customerDialogTitle">
+    <div class="dlg-body">
+      <h3 id="customerDialogTitle">Customer</h3>
+      <form id="customerForm" class="form" novalidate>
+        <input type="hidden" id="customerId" />
+        <div class="field">
+          <label for="customerName">Name</label>
+          <input type="text" id="customerName" required maxlength="80" />
+        </div>
+        <div class="field">
+          <label for="customerAccount">Account number</label>
+          <input type="text" id="customerAccount" inputmode="numeric" maxlength="24" />
+        </div>
+        <div class="field">
+          <label for="customerPassword">Password (leave empty to auto-generate)</label>
+          <input type="text" id="customerPassword" autocomplete="new-password" />
+        </div>
+        <div class="field">
+          <label for="customerStatus">Status</label>
+          <select id="customerStatus">
+            <option value="active">Active</option>
+            <option value="blocked">Blocked</option>
+          </select>
+        </div>
+        <div id="customerError" class="alert error" role="alert" hidden></div>
+      </form>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" class="btn btn-secondary" id="customerCancelBtn">Cancel</button>
+      <button type="button" class="btn" id="customerSaveBtn">Save</button>
+    </div>
   </dialog>
 
   <script src="js/config.js"></script>
