@@ -23,9 +23,9 @@
   <main class="container wide">
     <div class="tabs" role="tablist">
       <button class="tab" role="tab" data-tab="customers" aria-selected="true" type="button">Customers</button>
+      <button class="tab" role="tab" data-tab="transactions" aria-selected="false" type="button">Transactions</button>
       <button class="tab" role="tab" data-tab="messages" aria-selected="false" type="button">Error messages</button>
       <button class="tab" role="tab" data-tab="limits" aria-selected="false" type="button">Limits</button>
-      <button class="tab" role="tab" data-tab="audit" aria-selected="false" type="button">Audit log</button>
     </div>
 
     <!-- Customers -->
@@ -38,6 +38,12 @@
               <label for="newName">Full name</label>
               <input type="text" id="newName" maxlength="80" required />
             </div>
+            <div class="field">
+              <label for="newAccount">Account number <span class="muted">(optional)</span></label>
+              <input type="text" id="newAccount" inputmode="numeric" autocomplete="off" placeholder="Leave empty to generate" />
+            </div>
+          </div>
+          <div class="row">
             <div class="field">
               <label for="newPassword">Password <span class="muted">(optional)</span></label>
               <input type="text" id="newPassword" autocomplete="off" placeholder="Leave empty to generate" />
@@ -62,11 +68,36 @@
       </div>
     </section>
 
+    <!-- Transactions -->
+    <section data-panel="transactions" hidden class="grid-gap">
+      <div class="card">
+        <div class="section-header">
+          <h2>All transactions</h2>
+          <div class="row-actions">
+            <select id="txFilter" aria-label="Filter by customer" style="max-width:260px"></select>
+            <button class="btn btn-secondary btn-sm" id="txRefresh" type="button">Refresh</button>
+            <button class="btn btn-sm" id="txNew" type="button">New transaction</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Date</th><th>Customer</th><th>Type</th><th>Counterparty</th><th class="num">Amount</th><th>Reference</th><th>Actions</th></tr>
+            </thead>
+            <tbody id="txBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <!-- Error messages -->
     <section data-panel="messages" hidden>
       <div class="card">
-        <div class="section-header"><h2>Transfer error messages</h2></div>
-        <p class="page-sub">Each message is shown to the customer when the matching check fails. Placeholders are filled in automatically.</p>
+        <div class="section-header">
+          <h2>Error message types</h2>
+          <button class="btn btn-sm" id="msgNew" type="button">New message type</button>
+        </div>
+        <p class="page-sub">Each message is shown to the customer when the matching check fails. Placeholders are filled in automatically. Built-in types can be edited but not deleted.</p>
         <div id="messagesList"></div>
       </div>
     </section>
@@ -89,19 +120,6 @@
           <div id="limitsError" class="alert error" role="alert" hidden></div>
           <div><button class="btn" type="submit">Save limits</button></div>
         </form>
-      </div>
-    </section>
-
-    <!-- Audit -->
-    <section data-panel="audit" hidden>
-      <div class="card">
-        <div class="section-header"><h2>Audit log</h2><button class="btn btn-secondary btn-sm" id="auditRefresh" type="button">Refresh</button></div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Time</th><th>Who</th><th>Action</th><th>Target</th><th>Details</th></tr></thead>
-            <tbody id="auditBody"></tbody>
-          </table>
-        </div>
       </div>
     </section>
   </main>
