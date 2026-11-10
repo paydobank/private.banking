@@ -73,16 +73,17 @@
     });
   }
 
-  // How a ledger entry is displayed (used by customer and admin pages)
+   // How a ledger entry is displayed (used by customer and admin pages)
   function entryLabel(e) {
     const who = e.counterparty_name || '';
     switch (e.kind) {
       case 'transfer_out': return { title: 'Transfer · ' + who, sub: e.description };
       case 'transfer_in': return { title: 'Incoming · ' + who, sub: e.description };
-      case 'adjustment': return { title: 'Adjustment by administrator', sub: e.description };
-      case 'reversal': return { title: 'Reversal' + (who ? ' · ' + who : ''), sub: e.description };
+      case 'adjustment': return { title: 'Adjustment', sub: e.description };
       case 'opening': return { title: 'Opening balance', sub: '' };
       default: return { title: e.kind, sub: e.description };
+    }
+  }
     }
   }
 
