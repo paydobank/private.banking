@@ -1,4 +1,5 @@
-// js/admin.js — administrator console. Every action is re-checked and logged by the data layer.
+// js/admin.js — administrator console. Full control over customers,
+// transactions (any date) and error-message types.
 (async function () {
   'use strict';
   const { api, el, fmtEur, fmtDate, groupAccount, requireUser, wireLogout, entryLabel, toast } = Bank;
@@ -11,6 +12,7 @@
   const $ = (id) => document.getElementById(id);
   const dlg = $('dlg');
   let uid = 0;
+  let usersCache = [];
 
   // ---------- small helpers ----------
   function showDialog(title, content, buttons, wide) {
@@ -36,10 +38,16 @@
       toast(e.message, 'error');
     }
   }
+  const toLocalInput = (ts) => {
+    const d = new Date(ts * 1000);
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    return d.toISOString().slice(0, 16);
+  };
+  const kindLabel = { opening: 'Opening balance', transfer_in: 'Incoming', transfer_out: 'Outgoing', adjustment: 'Adjustment' };
 
   // ---------- tabs ----------
   const tabs = [...document.querySelectorAll('.tab')];
-  const loaders = { customers: loadUsers, messages: loadMessages, limits: loadLimits, audit: loadAudit };
+  const loaders = { customers: loadUsers, transactions: loadTransactions, messages: loadMessages, limits: loadLimits };
   function selectTab(name) {
     tabs.forEach((t) => t.setAttribute('aria-selected', String(t.dataset.tab === name)));
     document.querySelectorAll('[data-panel]').forEach((p) => { p.hidden = p.dataset.panel !== name; });
@@ -50,6 +58,7 @@
   // ---------- customers ----------
   async function loadUsers() {
     const { users } = await api('GET', '/api/admin/users');
+    usersCache = users;
     const btn = (text, fn, cls) => el('button', { type: 'button', class: 'btn btn-sm ' + (cls || 'btn-secondary'), text, onclick: fn });
     $('usersBody').replaceChildren(...users.map((u) =>
       el('tr', {},
@@ -60,12 +69,11 @@
         el('td', {}, el('div', { class: 'row-actions' },
           btn('Ledger', () => guarded(() => openLedger(u))),
           btn('Edit', () => editUser(u)),
-          btn('Transfer', () => transferFlow(u, users)), // === NEW ===
-          btn('Adjust', () => adjustBalance(u)),
           btn('Password', () => resetPassword(u)),
           u.status === 'active'
             ? btn('Block', () => setStatus(u, 'blocked'), 'btn-danger')
             : btn('Unblock', () => setStatus(u, 'active')),
+          btn('Delete', () => deleteUser(u), 'btn-danger'),
         )),
       )));
   }
@@ -76,7 +84,11 @@
     err.hidden = true;
     guarded(async () => {
       try {
-        const r = await api('POST', '/api/admin/users', { name: $('newName').value, password: $('newPassword').value });
+        const r = await api('POST', '/api/admin/users', {
+          name: $('newName').value,
+          password: $('newPassword').value,
+          account: $('newAccount').value,
+        });
         $('createdBox').replaceChildren(secretBox([['Name', r.name], ['Account number', groupAccount(r.account)], ['Password', r.password]]));
         $('createdBox').hidden = false;
         $('createForm').reset();
@@ -90,22 +102,25 @@
 
   function editUser(u) {
     const name = el('input', { type: 'text', value: u.name, maxlength: '80' });
+    const account = el('input', { type: 'text', value: groupAccount(u.account), maxlength: '29' });
     const err = errorBox();
     const save = el('button', {
       type: 'button', class: 'btn', text: 'Save',
       onclick: () => guarded(async () => {
         try {
-          await api('PATCH', '/api/admin/users/' + u.id, { name: name.value });
+          await api('PATCH', '/api/admin/users/' + u.id, { name: name.value, account: account.value });
           dlg.close(); toast('Saved'); loadUsers();
         } catch (ex) { if (ex.status === 401) throw ex; showErr(err, ex); }
       }),
     });
-    showDialog('Edit customer', el('div', { class: 'form' }, err, field('Full name', name, 'Account ' + groupAccount(u.account))), [closeBtn(), save]);
+    showDialog('Edit customer', el('div', { class: 'form' }, err,
+      field('Full name', name),
+      field('Account number', account, '6-24 digits or letters')), [closeBtn(), save]);
   }
 
   function setStatus(u, status) {
     const verb = status === 'blocked' ? 'Block' : 'Unblock';
-    if (!confirm(verb + ' ' + u.name + '?' + (status === 'blocked' ? ' They will be signed out and cannot send or receive money.' : ''))) return;
+    if (!confirm(verb + ' ' + u.name + '?')) return;
     guarded(async () => {
       await api('PATCH', '/api/admin/users/' + u.id, { status });
       toast(u.name + ': ' + status);
@@ -113,80 +128,13 @@
     });
   }
 
-  // === NEW === admin transfer with a backdatable date field
-  function transferFlow(u, allUsers) {
-    const recipients = allUsers.filter((x) => x.id !== u.id && x.status === 'active');
-    if (!recipients.length) {
-      showDialog('New transfer · ' + u.name, el('div', { class: 'form' },
-        el('p', { class: 'alert warn', text: 'No other active customers to transfer to.' })),
-        [closeBtn()]);
-      return;
-    }
-
-    const toSelect = el('select', {});
-    recipients.forEach((x) => toSelect.appendChild(el('option', { value: x.id, text: x.name + ' · ' + groupAccount(x.account) })));
-
-    const amount = el('input', { type: 'text', inputmode: 'decimal', placeholder: '50.00', autocomplete: 'off' });
-    const when = el('input', { type: 'datetime-local' });
-    const n = new Date();
-    const pad = (v) => String(v).padStart(2, '0');
-    when.value = `${n.getFullYear()}-${pad(n.getMonth() + 1)}-${pad(n.getDate())}T${pad(n.getHours())}:${pad(n.getMinutes())}`;
-
-    const reason = el('input', { type: 'text', maxlength: '140', placeholder: 'Reference / note (optional)' });
-    const err = errorBox();
-
-    const go = el('button', {
-      type: 'button', class: 'btn', text: 'Send transfer',
-      onclick: () => guarded(async () => {
-        if (!/^\d{1,10}([.,]\d{1,2})?$/.test(amount.value.trim())) {
-          return showErr(err, { message: 'Enter a positive amount such as 50.00.' });
-        }
-        const whenDate = new Date(when.value);
-        if (isNaN(whenDate.getTime())) return showErr(err, { message: 'Invalid date.' });
-        if (whenDate.getTime() > Date.now() + 60_000) return showErr(err, { message: 'Date cannot be in the future.' });
-        try {
-          await api('POST', '/api/admin/transfers', {
-            user_id: u.id,
-            to_user_id: toSelect.value,
-            amount: amount.value,
-            created_at: whenDate.toISOString(),
-            reason: reason.value,
-          });
-          dlg.close();
-          toast('Transfer posted');
-          loadUsers();
-        } catch (ex) { if (ex.status === 401) throw ex; showErr(err, ex); }
-      }),
+  function deleteUser(u) {
+    if (!confirm('Delete ' + u.name + ' and all of their transactions? This cannot be undone.')) return;
+    guarded(async () => {
+      await api('DELETE', '/api/admin/users/' + u.id);
+      toast('Customer deleted');
+      loadUsers();
     });
-
-    showDialog('New transfer · ' + u.name, el('div', { class: 'form' },
-      el('p', { class: 'muted', text: 'Creates a paired transfer entry dated at the chosen time. It appears in the ledger as a normal transfer, not as an adjustment.' }),
-      err,
-      field('From', el('div', { class: 'mono', text: u.name + ' · ' + groupAccount(u.account) })),
-      field('To', toSelect),
-      field('Amount (EUR)', amount),
-      field('Date', when),
-      field('Reference', reason),
-    ), [closeBtn(), go]);
-  }
-
-  function adjustBalance(u) {
-    const amount = el('input', { type: 'text', inputmode: 'decimal', placeholder: '250.00 or -40.50', autocomplete: 'off' });
-    const reason = el('input', { type: 'text', maxlength: '140', placeholder: 'Why is this adjustment needed?' });
-    const err = errorBox();
-    const save = el('button', {
-      type: 'button', class: 'btn', text: 'Post adjustment',
-      onclick: () => guarded(async () => {
-        if (!/^[+-]?\d{1,10}([.,]\d{1,2})?$/.test(amount.value.trim())) return showErr(err, { message: 'Enter an amount such as 250.00 or -40.50.' });
-        try {
-          const r = await api('POST', '/api/admin/adjustments', { user_id: u.id, amount: amount.value, reason: reason.value });
-          dlg.close(); toast('Adjustment posted. New balance ' + fmtEur(r.balance_cents)); loadUsers();
-        } catch (ex) { if (ex.status === 401) throw ex; showErr(err, ex); }
-      }),
-    });
-    showDialog('Adjust balance · ' + u.name, el('div', { class: 'form' },
-      el('p', { class: 'muted', text: 'Adds a new entry labelled "Adjustment by administrator" to the history. Existing entries are never edited. Use a negative amount to deduct.' }),
-      err, field('Amount (EUR)', amount), field('Reason (visible to the customer, logged)', reason)), [closeBtn(), save]);
   }
 
   function resetPassword(u) {
@@ -207,48 +155,128 @@
 
   async function openLedger(u) {
     const d = await api('GET', '/api/admin/users/' + u.id + '/ledger');
-    const reversible = (e) => ['transfer_out', 'transfer_in', 'adjustment'].includes(e.kind) && !e.is_reversed;
     const rows = d.entries.map((e) => {
       const l = entryLabel(e);
       return el('tr', {},
         el('td', { text: fmtDate(e.created_at) }),
-        el('td', {}, el('div', { text: l.title }), l.sub ? el('div', { class: 'muted', text: l.sub }) : null,
-          e.is_reversed ? el('span', { class: 'badge neutral', text: 'reversed' }) : null),
+        el('td', {}, el('div', { text: l.title }), l.sub ? el('div', { class: 'muted', text: l.sub }) : null),
         el('td', { class: 'num', text: fmtEur(e.amount_cents) }),
-        el('td', {}, reversible(e)
-          ? el('button', { type: 'button', class: 'btn btn-danger btn-sm', text: 'Reverse', onclick: () => reverseFlow(u, e) })
-          : null),
       );
     });
     showDialog(u.name + ' · ledger', el('div', { class: 'grid-gap' },
-      el('p', { class: 'muted', text: 'Balance ' + fmtEur(d.balance_cents) + '. Entries are permanent; mistakes are corrected with a reversal.' }),
+      el('p', { class: 'muted', text: 'Balance ' + fmtEur(d.balance_cents) }),
       el('div', { class: 'table-wrap' }, el('table', {},
-        el('thead', {}, el('tr', {}, el('th', { text: 'Date' }), el('th', { text: 'Entry' }), el('th', { class: 'num', text: 'Amount' }), el('th'))),
+        el('thead', {}, el('tr', {}, el('th', { text: 'Date' }), el('th', { text: 'Entry' }), el('th', { class: 'num', text: 'Amount' }))),
         el('tbody', {}, rows)))), [closeBtn()], true);
   }
 
-  function reverseFlow(u, e) {
-    const reason = el('input', { type: 'text', maxlength: '140', placeholder: 'Reason for the reversal' });
+  // ---------- transactions ----------
+  async function loadTransactions() {
+    const filter = $('txFilter').value;
+    const path = '/api/admin/transactions?limit=500' + (filter ? '&user_id=' + filter : '');
+    const { entries } = await api('GET', path);
+    const btn = (text, fn, cls) => el('button', { type: 'button', class: 'btn btn-sm ' + (cls || 'btn-secondary'), text, onclick: fn });
+    $('txBody').replaceChildren(...entries.map((e) =>
+      el('tr', {},
+        el('td', { text: fmtDate(e.created_at) }),
+        el('td', { text: e.owner_name + ' (' + groupAccount(e.owner_account) + ')' }),
+        el('td', {}, el('span', { class: 'badge neutral', text: kindLabel[e.kind] || e.kind })),
+        el('td', { text: e.counterparty_name || '—' }),
+        el('td', { class: 'num', text: fmtEur(e.amount_cents) }),
+        el('td', { class: 'muted mono', text: e.ref }),
+        el('td', {}, el('div', { class: 'row-actions' },
+          btn('Edit', () => editTransaction(e)),
+          btn('Delete', () => deleteTransaction(e), 'btn-danger'),
+        )),
+      )));
+  }
+
+  $('txRefresh').addEventListener('click', () => guarded(loadTransactions));
+  $('txFilter').addEventListener('change', () => guarded(loadTransactions));
+  $('txNew').addEventListener('click', () => transactionDialog(null));
+
+  function fillUserSelect(select, selectedId) {
+    select.replaceChildren(...usersCache.map((u) =>
+      el('option', { value: u.id, text: u.name + ' · ' + groupAccount(u.account) })));
+    if (selectedId) select.value = selectedId;
+  }
+
+  function transactionDialog(e) {
+    const isNew = !e;
+    const userSel = el('select', {});
+    const kindSel = el('select', {},
+      el('option', { value: 'opening', text: 'Opening balance' }),
+      el('option', { value: 'transfer_in', text: 'Incoming transfer' }),
+      el('option', { value: 'transfer_out', text: 'Outgoing transfer' }),
+      el('option', { value: 'adjustment', text: 'Adjustment' }));
+    const amount = el('input', { type: 'text', inputmode: 'decimal', placeholder: '250.00 or -40.50', autocomplete: 'off' });
+    const cpSel = el('select', {}, el('option', { value: '', text: '— none —' }));
+    const description = el('input', { type: 'text', maxlength: '140', placeholder: 'Rent, invoice 42, gift…' });
+    const date = el('input', { type: 'datetime-local' });
+    const ref = el('input', { type: 'text', maxlength: '40', placeholder: 'Leave empty to generate' });
     const err = errorBox();
-    const isTransfer = e.kind !== 'adjustment';
-    const go = el('button', {
-      type: 'button', class: 'btn', text: 'Confirm reversal',
+
+    fillUserSelect(userSel, e ? e.user_id : null);
+    cpSel.append(...usersCache.map((u) => el('option', { value: u.id, text: u.name })));
+    if (e) {
+      kindSel.value = e.kind;
+      amount.value = (e.amount_cents / 100).toFixed(2);
+      cpSel.value = e.counterparty_name ? (usersCache.find((u) => u.name === e.counterparty_name) || {}).id || '' : '';
+      description.value = e.description || '';
+      date.value = toLocalInput(e.created_at);
+      ref.value = e.ref;
+    } else {
+      date.value = toLocalInput(Math.floor(Date.now() / 1000));
+    }
+
+    const save = el('button', {
+      type: 'button', class: 'btn', text: isNew ? 'Create transaction' : 'Save changes',
       onclick: () => guarded(async () => {
+        const body = {
+          user_id: userSel.value,
+          kind: kindSel.value,
+          amount: amount.value,
+          counterparty_id: cpSel.value || undefined,
+          description: description.value,
+          date: date.value,
+          ref: ref.value,
+        };
         try {
-          await api('POST', '/api/admin/reversals', { ref: e.ref, reason: reason.value });
-          toast('Reversed'); loadUsers(); await openLedger(u);
+          if (isNew) await api('POST', '/api/admin/transactions', body);
+          else await api('PATCH', '/api/admin/transactions/' + e.id, body);
+          dlg.close(); toast(isNew ? 'Transaction created' : 'Transaction saved');
+          loadTransactions(); loadUsers();
         } catch (ex) { if (ex.status === 401) throw ex; showErr(err, ex); }
       }),
     });
-    showDialog('Reverse entry', el('div', { class: 'form' },
-      el('p', { text: entryLabel(e).title + ' · ' + fmtEur(e.amount_cents) }),
-      isTransfer ? el('p', { class: 'alert warn', text: 'This reverses both sides of the transfer: the sender is refunded and the recipient is debited.' }) : null,
-      err, field('Reason (logged)', reason)), [el('button', { type: 'button', class: 'btn btn-secondary', text: 'Back', onclick: () => guarded(() => openLedger(u)) }), go]);
+
+    showDialog(isNew ? 'New transaction' : 'Edit transaction', el('div', { class: 'form' },
+      err,
+      field('Customer', userSel),
+      field('Type', kindSel),
+      field('Amount (EUR)', amount, 'Sign is set automatically by the type.'),
+      field('Counterparty', cpSel, 'Only for transfers.'),
+      field('Description', description),
+      field('Date & time', date, 'Any date — past or present.'),
+      field('Reference', ref, 'Unique ID of the entry. Leave empty to generate.'),
+    ), [closeBtn(), save], true);
   }
 
-  // ---------- messages ----------
+  function editTransaction(e) { transactionDialog(e); }
+
+  function deleteTransaction(e) {
+    if (!confirm('Delete this transaction (' + fmtEur(e.amount_cents) + ' · ' + (kindLabel[e.kind] || e.kind) + ')?')) return;
+    guarded(async () => {
+      await api('DELETE', '/api/admin/transactions/' + e.id);
+      toast('Transaction deleted');
+      loadTransactions(); loadUsers();
+    });
+  }
+
+  // ---------- error message types ----------
   async function loadMessages() {
     const { messages } = await api('GET', '/api/admin/messages');
+    const btn = (text, fn, cls) => el('button', { type: 'button', class: 'btn btn-sm ' + (cls || 'btn-secondary'), text, onclick: fn });
     $('messagesList').replaceChildren(...messages.map((m) => {
       const ta = el('textarea', { maxlength: '300', rows: '2', 'aria-label': 'Message for ' + m.code, text: m.text });
       const err = errorBox();
@@ -261,8 +289,16 @@
           } catch (ex) { if (ex.status === 401) throw ex; showErr(err, ex); }
         }),
       });
+      const del = DEFAULT_MESSAGES[m.code] ? null : btn('Delete', () => {
+        if (!confirm('Delete message type ' + m.code + '?')) return;
+        guarded(async () => {
+          await api('DELETE', '/api/admin/messages/' + m.code);
+          toast('Message type deleted');
+          loadMessages();
+        });
+      }, 'btn-danger');
       return el('div', { class: 'msg-card' },
-        el('div', { class: 'section-header' }, el('h3', { text: m.code }), el('div', { class: 'msg-actions' }, save)),
+        el('div', { class: 'section-header' }, el('h3', { text: m.code }), el('div', { class: 'msg-actions' }, save, del)),
         el('p', { class: 'muted', text: m.description }),
         ta, err,
         m.placeholders && m.placeholders.length
@@ -272,6 +308,28 @@
       );
     }));
   }
+
+  $('msgNew').addEventListener('click', () => {
+    const code = el('input', { type: 'text', maxlength: '40', placeholder: 'e.g. CARD_LIMIT_EXCEEDED' });
+    const text = el('textarea', { maxlength: '300', rows: '3', placeholder: 'Text shown to the customer…' });
+    const desc = el('input', { type: 'text', maxlength: '300', placeholder: 'Internal description (optional)' });
+    const err = errorBox();
+    const save = el('button', {
+      type: 'button', class: 'btn', text: 'Create message type',
+      onclick: () => guarded(async () => {
+        try {
+          await api('POST', '/api/admin/messages', { code: code.value, text: text.value, description: desc.value });
+          dlg.close(); toast('Message type created'); loadMessages();
+        } catch (ex) { if (ex.status === 401) throw ex; showErr(err, ex); }
+      }),
+    });
+    showDialog('New error message type', el('div', { class: 'form' },
+      err,
+      field('Code', code, 'A-Z, 0-9, underscore. Example: CARD_LIMIT_EXCEEDED'),
+      field('Message text', text, 'Placeholders like {limit} are filled in automatically.'),
+      field('Description', desc),
+    ), [closeBtn(), save]);
+  });
 
   // ---------- limits ----------
   async function loadLimits() {
@@ -291,26 +349,6 @@
       } catch (ex) { if (ex.status === 401) throw ex; showErr(err, ex); }
     });
   });
-
-  // ---------- audit ----------
-  async function loadAudit() {
-    const { entries } = await api('GET', '/api/admin/audit?limit=200');
-    // === CHANGED === hide internal "backdated transfer" actions from the
-    // visible log; they remain in localStorage for debugging.
-    const HIDDEN_ACTIONS = new Set(['backdated_transfer']);
-    $('auditBody').replaceChildren(...entries
-      .filter((a) => !HIDDEN_ACTIONS.has(a.action))
-      .map((a) =>
-        el('tr', {},
-          el('td', { text: fmtDate(a.created_at) }),
-          el('td', { text: a.actor_name || '—' }),
-          el('td', {}, el('span', { class: 'badge neutral', text: a.action })),
-          el('td', { text: a.target || '' }),
-          el('td', { class: 'muted', text: a.details || '' }),
-        )));
-  }
-
-  $('auditRefresh').addEventListener('click', () => guarded(loadAudit));
 
   selectTab('customers');
 })();
