@@ -29,7 +29,9 @@
 
   const eurFormat = new Intl.NumberFormat('en-IE', { style: 'currency', currency: 'EUR' });
   const fmtEur = (cents) => eurFormat.format(cents / 100);
-  const fmtDate = (ts) => new Date(ts * 1000).toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const fmtDate = (ts) => new Date(ts * 1000).toLocaleString(undefined, {
+    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+  });
   const groupAccount = (n) => String(n).replace(/(.{4})(?=.)/g, '$1 ');
   const maskAccount = (n) => '•••• ' + String(n).slice(-4);
   const initials = (name) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]).join('').toUpperCase();
@@ -40,4 +42,55 @@
     document.querySelectorAll('[data-brand]').forEach((n) => { n.textContent = brand; });
     document.querySelectorAll('[data-brand-mark]').forEach((n) => { n.textContent = brand[0].toUpperCase(); });
     const page = document.body.dataset.title || '';
-    document.title = page ? brand + ' — ' + page
+    document.title = page ? brand + ' — ' + page : brand;
+  }
+
+  async function requireUser(role) {
+    try {
+      const data = await api('GET', '/api/me');
+      applyConfig(data.config);
+      if (data.user.role !== role) {
+        location.replace(data.user.role === 'admin' ? 'admin.html' : 'dashboard.html');
+        return null;
+      }
+      return data.user;
+    } catch (e) {
+      if (e.status === 401) { location.replace('index.html'); return null; }
+      toast(e.message, 'error');
+      return null;
+    }
+  }
+
+  function wireLogout(button) {
+    if (!button) return;
+    button.addEventListener('click', async () => {
+      try { await api('POST', '/api/logout', {}); } catch (e) { /* ignore */ }
+      location.replace('index.html');
+    });
+  }
+
+  function entryLabel(e) {
+    const who = e.counterparty_name || '';
+    switch (e.kind) {
+      case 'transfer_out': return { title: 'Transfer · ' + who, sub: e.description };
+      case 'transfer_in': return { title: 'Incoming · ' + who, sub: e.description };
+      case 'adjustment': return { title: 'Adjustment', sub: e.description };
+      case 'opening': return { title: 'Opening balance', sub: '' };
+      default: return { title: e.kind, sub: e.description };
+    }
+  }
+
+  let toastTimer = null;
+  function toast(message, kind) {
+    document.querySelectorAll('.toast').forEach((n) => n.remove());
+    const node = el('div', { class: 'toast' + (kind === 'error' ? ' error' : ''), role: 'status', text: message });
+    document.body.append(node);
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => node.remove(), 3500);
+  }
+
+  window.Bank = {
+    api, el, fmtEur, fmtDate, groupAccount, maskAccount, initials,
+    amountLooksValid, applyConfig, requireUser, wireLogout, entryLabel, toast,
+  };
+})();
