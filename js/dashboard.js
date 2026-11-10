@@ -1,89 +1,80 @@
-// js/dashboard.js — customer dashboard. Data comes from the data layer.
-(async function () {
+// js/dashboard.js — customer dashboard.
+(function () {
   'use strict';
-  const { api, el, fmtEur, fmtDate, maskAccount, initials, requireUser, wireLogout, entryLabel, toast } = Bank;
+  const { api, applyConfig, requireUser, wireLogout, fmtEur, fmtDate, entryLabel, el } = window.Bank;
 
-  const user = await requireUser('user');
-  if (!user) return;
-  wireLogout(document.getElementById('logoutBtn'));
+  let currentUser = null;
 
-  const txList = document.getElementById('txList');
-  const txEmpty = document.getElementById('txEmpty');
-  const viewAll = document.getElementById('viewAll');
-  let entries = [];
+  async function init() {
+    currentUser = await requireUser('user');
+    if (!currentUser) return;
 
-  function renderEntries(list) {
-    txList.replaceChildren();
-    txEmpty.hidden = list.length > 0;
-    for (const e of list) {
-      const label = entryLabel(e);
-      const incoming = e.amount_cents > 0;
-      txList.append(
-el('div', { class: 'tx' },
-   el('div', { class: 'tx-icon ' + (incoming ? 'in' : 'out'), 'aria-hidden': 'true', text: incoming ? '↙' : '↗' }),
-          el('div', { class: 'tx-info' },
-            el('p', { class: 'tx-title', text: label.title }),
-            label.sub ? el('p', { class: 'tx-sub', text: label.sub }) : null,
-el('p', { class: 'tx-sub', text: fmtDate(e.created_at) }),          ),
-          el('div', { class: 'tx-amount ' + (incoming ? 'in' : 'out'), text: (incoming ? '+' : '') + fmtEur(e.amount_cents) }),
-        ),
-      );
+    document.getElementById('userName').textContent = currentUser.name;
+    wireLogout(document.getElementById('logoutBtn'));
+
+    await loadDashboard();
+    document.getElementById('csvBtn').addEventListener('click', downloadCsv);
+  }
+
+  async function loadDashboard() {
+    try {
+      const data = await api('GET', '/api/dashboard');
+      document.getElementById('balance').textContent = fmtEur(data.balance_cents);
+      document.getElementById('received').textContent = fmtEur(data.received_30d_cents);
+      document.getElementById('sent').textContent = fmtEur(data.sent_30d_cents);
+      document.getElementById('dailyRemaining').textContent = fmtEur(data.daily_remaining_cents);
+
+      const list = document.getElementById('transactionsList');
+      list.innerHTML = '';
+      if (!data.entries.length) {
+        list.append(el('p', { class: 'muted', text: 'No transactions yet.' }));
+        return;
+      }
+      data.entries.forEach((e) => {
+        const info = entryLabel(e);
+        const row = el('div', { class: 'transaction' },
+          el('div', { class: 'transaction-info' },
+            el('div', { class: 'transaction-title', text: info.title }),
+            el('div', { class: 'transaction-sub', text: (info.sub || '') + ' · ' + fmtDate(e.created_at) })
+          ),
+          el('div', {
+            class: 'transaction-amount ' + (e.amount_cents >= 0 ? 'positive' : 'negative'),
+            text: (e.amount_cents >= 0 ? '+' : '') + fmtEur(e.amount_cents)
+          })
+        );
+        list.append(row);
+      });
+    } catch (err) {
+      window.Bank.toast(err.message, 'error');
     }
   }
 
-  try {
-    const d = await api('GET', '/api/dashboard');
-    document.getElementById('ownerName').textContent = d.user.name;
-    document.getElementById('topName').textContent = d.user.name;
-    document.getElementById('ownerAccount').textContent = 'Account ' + maskAccount(d.user.account);
-    document.getElementById('avatar').textContent = initials(d.user.name);
-    document.getElementById('userChip').textContent = initials(d.user.name);
-    document.getElementById('balance').textContent = fmtEur(d.balance_cents);
-    document.getElementById('received').textContent = fmtEur(d.received_30d_cents);
-    document.getElementById('sent').textContent = fmtEur(d.sent_30d_cents);
-    document.getElementById('limitLeft').textContent = fmtEur(d.daily_remaining_cents);
-    entries = d.entries;
-    renderEntries(entries);
-    viewAll.hidden = entries.length < 20;
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-
-  async function loadAll() {
-    const d = await api('GET', '/api/transactions?limit=500');
-    entries = d.entries;
-    return entries;
-  }
-
-  viewAll.addEventListener('click', async () => {
+  async function downloadCsv() {
     try {
-      renderEntries(await loadAll());
-      viewAll.hidden = true;
-    } catch (e) { toast(e.message, 'error'); }
-  });
-
-  document.getElementById('csvBtn').addEventListener('click', async () => {
-    try {
-      const all = await loadAll();
-      const esc = (v) => {
-        let s = String(v ?? '');
-        if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; // keep spreadsheets from running text as formulas
-        return '"' + s.replace(/"/g, '""') + '"';
-      };
-      const rows = [['Date', 'Type', 'Counterparty', 'Reference', 'Amount EUR', 'Ref ID']];
-      for (const e of all) {
+      const data = await api('GET', '/api/transactions?limit=500');
+      const rows = [['Date', 'Type', 'Counterparty', 'Description', 'Amount (EUR)', 'Reference']];
+      data.entries.forEach((e) => {
         rows.push([
-          new Date(e.created_at * 1000).toISOString(), e.kind, e.counterparty_name || '',
-          e.description, (e.amount_cents / 100).toFixed(2), e.ref,
+          fmtDate(e.created_at),
+          e.kind,
+          e.counterparty_name || '',
+          e.description || '',
+          (e.amount_cents / 100).toFixed(2),
+          e.ref || ''
         ]);
-      }
-      const csv = rows.map((r) => r.map(esc).join(',')).join('\r\n');
-      const url = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' }));
-      const a = el('a', { href: url, download: 'statement.csv' });
-      document.body.append(a);
+      });
+      const csv = rows.map((r) => r.map((c) => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'statement_' + currentUser.account + '.csv';
       a.click();
-      a.remove();
       URL.revokeObjectURL(url);
-    } catch (e) { toast(e.message, 'error'); }
-  });
+    } catch (err) {
+      window.Bank.toast(err.message, 'error');
+    }
+  }
+
+  init();
 })();
