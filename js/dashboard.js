@@ -19,8 +19,8 @@
       const label = entryLabel(e);
       const incoming = e.amount_cents > 0;
       txList.append(
-        el('div', { class: 'tx' + (e.is_reversed ? ' reversed' : '') },
-          el('div', { class: 'tx-icon ' + (incoming ? 'in' : 'out'), 'aria-hidden': 'true', text: incoming ? '↙' : '↗' }),
+el('div', { class: 'tx' },
+   el('div', { class: 'tx-icon ' + (incoming ? 'in' : 'out'), 'aria-hidden': 'true', text: incoming ? '↙' : '↗' }),
           el('div', { class: 'tx-info' },
             el('p', { class: 'tx-title', text: label.title }),
             label.sub ? el('p', { class: 'tx-sub', text: label.sub }) : null,
